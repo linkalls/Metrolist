@@ -158,6 +158,8 @@ import com.metrolist.music.ui.screens.settings.NavigationTab
 import com.metrolist.music.ui.theme.ColorSaver
 import com.metrolist.music.ui.theme.DefaultThemeColor
 import com.metrolist.music.ui.theme.MetrolistTheme
+import com.metrolist.music.ui.theme.wear.WearTypography
+import com.metrolist.music.ui.theme.wear.wearColorScheme
 import com.metrolist.music.ui.theme.extractThemeColor
 import com.metrolist.music.ui.utils.appBarScrollBehavior
 import com.metrolist.music.ui.utils.backToMain
@@ -169,6 +171,10 @@ import com.metrolist.music.utils.get
 import com.metrolist.music.utils.rememberEnumPreference
 import com.metrolist.music.utils.rememberPreference
 import com.metrolist.music.utils.reportException
+import com.metrolist.music.utils.wear.isWearDevice
+import com.metrolist.music.utils.wear.isRoundScreen
+import com.metrolist.music.ui.component.wear.WearOSNavigation
+import com.metrolist.music.ui.component.wear.WearOSMiniPlayer
 import com.metrolist.music.viewmodels.HomeViewModel
 import com.valentinilk.shimmer.LocalShimmerTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -352,6 +358,16 @@ class MainActivity : ComponentActivity() {
                     val bottomInset = with(density) { windowsInsets.getBottom(density).toDp() }
                     val bottomInsetDp = WindowInsets.systemBars.asPaddingValues().calculateBottomPadding()
 
+                    // Wear OS detection
+                    val isWearOS = isWearDevice()
+                    val isRound = isRoundScreen()
+                    val (screenWidth, screenHeight) = remember(maxWidth, maxHeight) { 
+                        Pair(maxWidth.value.toInt(), maxHeight.value.toInt()) 
+                    }
+                    
+                    // Adjust UI for Wear OS
+                    val isSmallScreen = screenWidth < 400 || screenHeight < 400
+
                     val navController = rememberNavController()
                     val homeViewModel: HomeViewModel = viewModel()
                     val accountImageUrl by homeViewModel.accountImageUrl.collectAsState()
@@ -421,17 +437,27 @@ class MainActivity : ComponentActivity() {
                     }
 
                     val shouldShowSearchBar =
-                        remember(active, navBackStackEntry) {
-                            active ||
-                                    navigationItems.fastAny { it.route == navBackStackEntry?.destination?.route } ||
-                                    navBackStackEntry?.destination?.route?.startsWith("search/") == true
+                        remember(active, navBackStackEntry, isWearOS, isSmallScreen) {
+                            if (isWearOS || isSmallScreen) {
+                                // Simplified search for Wear OS - only show when active
+                                active
+                            } else {
+                                active ||
+                                        navigationItems.fastAny { it.route == navBackStackEntry?.destination?.route } ||
+                                        navBackStackEntry?.destination?.route?.startsWith("search/") == true
+                            }
                         }
 
                     val shouldShowNavigationBar =
-                        remember(navBackStackEntry, active) {
-                            navBackStackEntry?.destination?.route == null ||
-                                    navigationItems.fastAny { it.route == navBackStackEntry?.destination?.route } &&
-                                    !active
+                        remember(navBackStackEntry, active, isWearOS, isSmallScreen) {
+                            if (isWearOS || isSmallScreen) {
+                                // On Wear OS, show navigation differently
+                                false
+                            } else {
+                                navBackStackEntry?.destination?.route == null ||
+                                        navigationItems.fastAny { it.route == navBackStackEntry?.destination?.route } &&
+                                        !active
+                            }
                         }
 
                     val navigationBarHeight by animateDpAsState(
@@ -564,9 +590,11 @@ class MainActivity : ComponentActivity() {
 
                     var shouldShowTopBar by rememberSaveable { mutableStateOf(false) }
 
-                    LaunchedEffect(navBackStackEntry) {
+                    LaunchedEffect(navBackStackEntry, isWearOS, isSmallScreen) {
                         shouldShowTopBar =
-                            !active && navBackStackEntry?.destination?.route in topLevelScreens && navBackStackEntry?.destination?.route != "settings"
+                            !active && navBackStackEntry?.destination?.route in topLevelScreens && 
+                            navBackStackEntry?.destination?.route != "settings" && 
+                            !(isWearOS || isSmallScreen) // Hide top bar on Wear OS for space
                     }
 
                     val coroutineScope = rememberCoroutineScope()
@@ -844,75 +872,108 @@ class MainActivity : ComponentActivity() {
                                         navController = navController,
                                         pureBlack = pureBlack
                                     )
-                                    NavigationBar(
-                                        modifier = Modifier
-                                            .align(Alignment.BottomCenter)
-                                            .offset {
-                                                if (navigationBarHeight == 0.dp) {
-                                                    IntOffset(
-                                                        x = 0,
-                                                        y = (bottomInset + NavigationBarHeight).roundToPx(),
-                                                    )
+                                    
+                                    // Use Wear OS navigation for small screens or Wear OS devices
+                                    if (isWearOS || isSmallScreen) {
+                                        WearOSNavigation(
+                                            navigationItems = navigationItems,
+                                            currentRoute = navBackStackEntry?.destination?.route,
+                                            onNavigate = { route ->
+                                                if (route == Screens.Search.route) {
+                                                    onActiveChange(true)
                                                 } else {
-                                                    val slideOffset =
-                                                        (bottomInset + NavigationBarHeight) *
-                                                                playerBottomSheetState.progress.coerceIn(
-                                                                    0f,
-                                                                    1f,
-                                                                )
-                                                    val hideOffset =
-                                                        (bottomInset + NavigationBarHeight) * (1 - navigationBarHeight / NavigationBarHeight)
-                                                    IntOffset(
-                                                        x = 0,
-                                                        y = (slideOffset + hideOffset).roundToPx(),
-                                                    )
+                                                    navController.navigate(route) {
+                                                        popUpTo(navController.graph.startDestinationId) {
+                                                            saveState = true
+                                                        }
+                                                        launchSingleTop = true
+                                                        restoreState = true
+                                                    }
                                                 }
                                             },
-                                        containerColor = if (pureBlack) Color.Black else MaterialTheme.colorScheme.surfaceContainer,
-                                        contentColor = if (pureBlack) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-                                    ) {
-                                        navigationItems.fastForEach { screen ->
-                                            val isSelected =
-                                                navBackStackEntry?.destination?.hierarchy?.any { it.route == screen.route } == true
-
-                                            NavigationBarItem(
-                                                selected = isSelected,
-                                                icon = {
-                                                    Icon(
-                                                        painter = painterResource(
-                                                            id = if (isSelected) screen.iconIdActive else screen.iconIdInactive
-                                                        ),
-                                                        contentDescription = null,
-                                                    )
-                                                },
-                                                label = {
-                                                    if (!slimNav) {
-                                                        Text(
-                                                            text = stringResource(screen.titleId),
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
+                                            isRound = isRound,
+                                            modifier = Modifier
+                                                .align(Alignment.BottomCenter)
+                                                .offset {
+                                                    if (playerBottomSheetState.progress > 0.3f) {
+                                                        IntOffset(0, (bottomInset + 60.dp).roundToPx())
+                                                    } else {
+                                                        IntOffset(0, 0)
+                                                    }
+                                                }
+                                        )
+                                    } else {
+                                        // Original navigation bar for larger screens
+                                        NavigationBar(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomCenter)
+                                                .offset {
+                                                    if (navigationBarHeight == 0.dp) {
+                                                        IntOffset(
+                                                            x = 0,
+                                                            y = (bottomInset + NavigationBarHeight).roundToPx(),
+                                                        )
+                                                    } else {
+                                                        val slideOffset =
+                                                            (bottomInset + NavigationBarHeight) *
+                                                                    playerBottomSheetState.progress.coerceIn(
+                                                                        0f,
+                                                                        1f,
+                                                                    )
+                                                        val hideOffset =
+                                                            (bottomInset + NavigationBarHeight) * (1 - navigationBarHeight / NavigationBarHeight)
+                                                        IntOffset(
+                                                            x = 0,
+                                                            y = (slideOffset + hideOffset).roundToPx(),
                                                         )
                                                     }
                                                 },
-                                                onClick = {
-                                                    if (screen.route == Screens.Search.route) {
-                                                        onActiveChange(true)
-                                                    } else if (isSelected) {
-                                                        navController.currentBackStackEntry?.savedStateHandle?.set("scrollToTop", true)
-                                                        coroutineScope.launch {
-                                                            searchBarScrollBehavior.state.resetHeightOffset()
+                                            containerColor = if (pureBlack) Color.Black else MaterialTheme.colorScheme.surfaceContainer,
+                                            contentColor = if (pureBlack) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                        ) {
+                                            navigationItems.fastForEach { screen ->
+                                                val isSelected =
+                                                    navBackStackEntry?.destination?.hierarchy?.any { it.route == screen.route } == true
+
+                                                NavigationBarItem(
+                                                    selected = isSelected,
+                                                    icon = {
+                                                        Icon(
+                                                            painter = painterResource(
+                                                                id = if (isSelected) screen.iconIdActive else screen.iconIdInactive
+                                                            ),
+                                                            contentDescription = null,
+                                                        )
+                                                    },
+                                                    label = {
+                                                        if (!slimNav) {
+                                                            Text(
+                                                                text = stringResource(screen.titleId),
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
                                                         }
-                                                    } else {
-                                                        navController.navigate(screen.route) {
-                                                            popUpTo(navController.graph.startDestinationId) {
-                                                                saveState = true
+                                                    },
+                                                    onClick = {
+                                                        if (screen.route == Screens.Search.route) {
+                                                            onActiveChange(true)
+                                                        } else if (isSelected) {
+                                                            navController.currentBackStackEntry?.savedStateHandle?.set("scrollToTop", true)
+                                                            coroutineScope.launch {
+                                                                searchBarScrollBehavior.state.resetHeightOffset()
                                                             }
-                                                            launchSingleTop = true
-                                                            restoreState = true
+                                                        } else {
+                                                            navController.navigate(screen.route) {
+                                                                popUpTo(navController.graph.startDestinationId) {
+                                                                    saveState = true
+                                                                }
+                                                                launchSingleTop = true
+                                                                restoreState = true
+                                                            }
                                                         }
-                                                    }
-                                                },
-                                            )
+                                                    },
+                                                )
+                                            }
                                         }
                                     }
                                     val baseBg = if (pureBlack) Color.Black else MaterialTheme.colorScheme.surfaceContainer
